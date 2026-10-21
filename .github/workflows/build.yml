@@ -1,0 +1,105 @@
+name: Build ODCPE BT Tether APK
+
+# Repo layout expected: bas is workflow file (.github/workflows/build.yml)
+# ke alawa, repo root me odcpe_bt_flutter.zip (ya koi bhi *.zip) daal dena —
+# baaki extract karke build karna yeh workflow khud karega.
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24.5'
+          channel: 'stable'
+
+      - name: Set up Java (Gradle ke liye)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      # Repo root me pada hua *.zip (jaisa maine diya tha: lib/ + pubspec.yaml
+      # andar ek odcpe_bt_flutter/ folder ke andar) khud dhoondh ke extract
+      # karta hai aur uska lib/ + pubspec.yaml repo root par la deta hai.
+      - name: Extract uploaded zip
+        run: |
+          set -e
+          ZIP_FILE=$(find . -maxdepth 1 -iname "*.zip" | head -n1)
+          if [ -z "$ZIP_FILE" ]; then
+            echo "Koi .zip file repo root me nahi mili!"
+            exit 1
+          fi
+          echo "Using zip: $ZIP_FILE"
+          mkdir -p /tmp/extracted
+          unzip -o "$ZIP_FILE" -d /tmp/extracted
+
+          # Zip ke andar lib/ aur pubspec.yaml kahin bhi ho (root par ya ek
+          # sub-folder ke andar), dhoondh ke nikal lo.
+          SRC_DIR=$(dirname "$(find /tmp/extracted -iname 'pubspec.yaml' | head -n1)")
+          echo "Source dir inside zip: $SRC_DIR"
+
+          mkdir -p /tmp/keep
+          cp -r "$SRC_DIR/lib" /tmp/keep/lib
+          cp "$SRC_DIR/pubspec.yaml" /tmp/keep/pubspec.yaml
+
+      - name: Generate Android platform project
+        run: flutter create --org com.example --project-name odcpe_bt_tether --platforms=android .
+
+      - name: Restore my Dart source
+        run: |
+          rm -rf lib
+          cp -r /tmp/keep/lib lib
+          cp /tmp/keep/pubspec.yaml pubspec.yaml
+
+      - name: Patch AndroidManifest permissions
+        run: |
+          python3 - <<'PY'
+          import re
+          p = "android/app/src/main/AndroidManifest.xml"
+          s = open(p).read()
+          perms = """
+              <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+              <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+              <uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation" />
+              <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+              <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+              <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+              <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
+              <queries>
+                  <package android:name="com.android.settings" />
+              </queries>
+          """
+          if "BLUETOOTH_SCAN" not in s:
+              s = s.replace("<application", perms + "\n    <application", 1)
+              open(p, "w").write(s)
+              print("Manifest patched.")
+          else:
+              print("Manifest already has permissions, skipping.")
+          PY
+
+      - name: Patch minSdkVersion
+        run: |
+          sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 21/' android/app/build.gradle || true
+          sed -i 's/minSdkVersion = flutter.minSdkVersion/minSdkVersion = 21/' android/app/build.gradle.kts 2>/dev/null || true
+          sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 21/' android/app/build.gradle.kts 2>/dev/null || true
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Build APK (debug — testing ke liye, unsigned release ki jagah)
+        run: flutter build apk --debug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: odcpe-bt-tether-apk
+          path: build/app/outputs/flutter-apk/app-debug.apk
