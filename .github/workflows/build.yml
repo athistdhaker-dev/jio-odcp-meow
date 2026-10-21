@@ -95,6 +95,36 @@ jobs:
       - name: Flutter pub get
         run: flutter pub get
 
+      # flutter_blue_plus (aur kai purane community plugins) ka android/build.gradle
+      # abhi bhi "flutter.compileSdkVersion" jaisi legacy property use karta hai,
+      # jo Flutter 3.24+ ke naye Gradle template me nahi milti. CI ke andar hi
+      # un cached plugin build.gradle files ko literal values se patch kar dete hain.
+      - name: Patch legacy plugin build.gradle files (flutter.* properties)
+        run: |
+          python3 - <<'PY'
+          import glob, re
+
+          patterns = [
+              (re.compile(r'\bflutter\.compileSdkVersion\b'), '34'),
+              (re.compile(r'\bflutter\.targetSdkVersion\b'), '34'),
+              (re.compile(r'\bflutter\.minSdkVersion\b'), '21'),
+              (re.compile(r'\bflutter\.ndkVersion\b'), '"25.1.8937393"'),
+          ]
+
+          files = glob.glob('/home/runner/.pub-cache/hosted/pub.dev/*/android/build.gradle')
+          changed = 0
+          for f in files:
+              s = open(f).read()
+              orig = s
+              for pat, repl in patterns:
+                  s = pat.sub(repl, s)
+              if s != orig:
+                  open(f, 'w').write(s)
+                  changed += 1
+                  print(f'Patched: {f}')
+          print(f'Total files patched: {changed}')
+          PY
+
       - name: Build APK (debug — testing ke liye, unsigned release ki jagah)
         run: flutter build apk --debug
 
